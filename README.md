@@ -10,7 +10,7 @@ DeepSeek Harness 的会话记忆插件。普通项目按工作目录隔离规则
 git clone https://github.com/oTATo-Boss/dsh-dialogue-session.git
 cd dsh-dialogue-session
 npm pack
-dsh plugin --profile desktop add "file:$PWD/otato-dialogue-session-1.2.1.tgz"
+dsh plugin --profile desktop add "file:$PWD/otato-dialogue-session-1.2.2.tgz"
 ```
 
 安装后在 DSH 插件管理页确认已启用。通用模式识别 Git 根目录或包含 AGENTS.md、CLAUDE.md、package.json 等标记的项目。它会重新读取项目文档，检查模型提取的决定和待确认事项是否有用户原话支撑，再写入本机的项目记录。

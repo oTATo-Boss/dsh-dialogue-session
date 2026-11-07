@@ -47,7 +47,7 @@ export function apply(ctx,config){
  const home=config.stateDir||path.join(process.env.DSH_HOME||path.join(os.homedir(),'.dsh'),'otato-session',createHash('sha256').update(root).digest('hex').slice(0,16));
  fs.mkdirSync(home,{recursive:true,mode:0o700});
  const runtimeFile=path.join(home,'runtime.json'),runId=randomUUID();
- const runtime={runId,state:'active',version:'1.2.1',projectRoot:root,pid:process.pid,node:process.version,loadedAt:new Date().toISOString()};
+ const runtime={runId,state:'starting',version:'1.2.2',projectRoot:root,pid:process.pid,node:process.version,loadedAt:new Date().toISOString()};
  atomicWrite(runtimeFile,JSON.stringify(runtime,null,2)+'\n');
  const lifecycle=new AbortController();
  const states=new Map(),attached=new WeakSet();let latestRoute,active=true;
@@ -108,7 +108,7 @@ export function apply(ctx,config){
   }
   latestRoute=a.model.current()??latestRoute;save(s);return next();
  });
- ctx.systemPrompt.context({name:'otato-project-sources',order:1800,required:true,interpolate:false,text:context=>{
+ ctx.systemPrompt.context({name:'dialogue-session-character-sources',order:1800,required:true,interpolate:false,text:context=>{
   const a=context.agent??context.scope;if(!belongs(a))return '';const s=stateOf(a);
   const recalled=s.mode==='对话'?recall(store(),chatId(a),s.query):null;
   let surface=recalled && forReply(recalled);
@@ -192,5 +192,6 @@ export function apply(ctx,config){
   },
   onError:({agent,error})=>{if(!active)return;const s=stateOf(agent);s.error=String(error?.message??error).slice(0,180);save(s);}
  });
+ runtime.state='active';atomicWrite(runtimeFile,JSON.stringify(runtime,null,2)+'\n');
  ctx.effect(()=>()=>{active=false;lifecycle.abort();try{if(JSON.parse(fs.readFileSync(runtimeFile,'utf8')).runId===runId)atomicWrite(runtimeFile,JSON.stringify({...runtime,state:'disposed',disposedAt:new Date().toISOString()},null,2)+'\n');}catch{}database?.close();});
 }

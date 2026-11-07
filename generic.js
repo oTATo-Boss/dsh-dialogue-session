@@ -16,7 +16,7 @@ function rootAgent(a){return a&&Math.max(a.session?.header?.delegationDepth??0,a
 export function apply(ctx,config){
  const home=config.stateDir||path.join(process.env.DSH_HOME||path.join(os.homedir(),'.dsh'),'session-guard');
  fs.mkdirSync(home,{recursive:true,mode:0o700});let active=true;const states=new Map(),attached=new WeakSet();
- const runtimeFile=path.join(home,'runtime.json'),runId=randomUUID();const runtime={runId,state:'active',version:'1.2.1',autoProjects:true,excludedRoots:config.excludedRoots,pid:process.pid,node:process.version,loadedAt:new Date().toISOString()};
+ const runtimeFile=path.join(home,'runtime.json'),runId=randomUUID();const runtime={runId,state:'starting',version:'1.2.2',autoProjects:true,excludedRoots:config.excludedRoots,pid:process.pid,node:process.version,loadedAt:new Date().toISOString()};
  const saveRuntime=()=>atomicWrite(runtimeFile,JSON.stringify(runtime,null,2)+'\n');saveRuntime();
  function project(a){return rootAgent(a)?discoverProject(a.session?.header?.cwd??'',config.excludedRoots):null;}
  function stateOf(a,messages=[]){
@@ -32,7 +32,7 @@ export function apply(ctx,config){
  async function attach(a,messages=[]){const s=stateOf(a,messages);if(!s||attached.has(a))return s;attached.add(a);const fiber=await a.ctx.plugin(reminder,{injections:[{id:'generic-project-sources',text:'项目规则和隔离记录已重新装配；按当前任务查阅所需文档、执行适用规则，完成后依据实际结果更新项目工作记录。',triggers:['turn-start','post-compaction'],subagents:false,maxPerTurn:2}]});if(!active)await fiber.dispose();else ctx.effect(()=>()=>fiber.dispose());return s;}
  ctx.on('agent/created',({agent})=>attach(agent));
  ctx.on('agent/pre-step',async(payload,next)=>{await attach(payload.agent,payload.messages);return next();});
- ctx.systemPrompt.context({name:'generic-project-sources',order:1801,required:true,interpolate:false,text:context=>{
+ ctx.systemPrompt.context({name:'dialogue-session-project-sources',order:1801,required:true,interpolate:false,text:context=>{
   const a=context.agent??context.scope;if(!project(a))return '';const s=stateOf(a);const text=projectContext(s.root,a.session.header.cwd,s.store);
   Object.assign(runtime,{lastContextAt:new Date().toISOString(),lastProjectKey:projectKey(s.root),contextBytes:Buffer.byteLength(text)});saveRuntime();
   return text+(s.error?'\n自动项目记录待恢复：'+s.error+'。不得声称已完成记录。':'');
@@ -50,5 +50,6 @@ export function apply(ctx,config){
   onDistilled:({agent,summary,prepared})=>{if(!active)return true;const s=stateOf(agent);if(!s||s.root!==prepared.source.root)return true;const result=recordEvidence(s.store,prepared.source,summary);s.cursor=prepared.source.seq;s.error=null;s.writes+=result.writes;save(s);return true;},
   onError:({agent,error})=>{if(!active)return;const s=stateOf(agent);if(s){s.error=String(error?.message??error).slice(0,180);save(s);}}
  });
+ runtime.state='active';saveRuntime();
  ctx.effect(()=>()=>{active=false;try{if(JSON.parse(fs.readFileSync(runtimeFile,'utf8')).runId===runId){runtime.state='disposed';runtime.disposedAt=new Date().toISOString();saveRuntime();}}catch{}});
 }
