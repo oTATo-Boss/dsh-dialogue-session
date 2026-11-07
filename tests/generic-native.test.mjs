@@ -1,0 +1,35 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {Context} from '@deepseek-ai/cordis';
+import {LlmAdapter,createUserMessage} from '@deepseek-ai/dsh-llm';
+import * as entry from '../entry.js';
+import {projectKey} from '../projects.js';
+function fixture(rule){const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'dsh-project-')));fs.writeFileSync(path.join(root,'AGENTS.md'),rule);return root;}
+const temp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'dsh-global-state-'));
+class Mock extends LlmAdapter{
+ requests=[];chats=[];fail=false;gate=null;
+ async resolveModel(provider,id){return {provider,id,name:id,context:{contextWindow:100000},defaultMaxTokens:4096,reasoning:{efforts:[{id:'off',name:'Off'}],defaultEffort:'off'}};}
+ async *stream(options){this.requests.push(options);const user=options.messages.find(m=>m.role==='user')?.content?.[0]?.text??'';let output='知道了';
+ if(options.purpose==='compaction')output='A synthetic checkpoint omitting all project rules.';
+ else if(user.startsWith('{')&&user.includes('project_user_messages')){if(this.gate)await this.gate;const data=JSON.parse(user);const quotes=data.project_user_messages.map(m=>m.text).filter(t=>t.includes('必须'));output=this.fail?'bad json':JSON.stringify({facts:quotes.map(quote=>({quote})),pending:[]});}
+ else this.chats.push(options);
+ yield {type:'text-delta',index:0,text:output};yield {type:'finish',reason:{kind:'stop'}};
+ }
+}
+async function host(state,{late=false,...config}={}){const ctx=new Context(),mock=new Mock(),errors=[];ctx.on('agent/error',e=>errors.push(String(e.error)));for(const name of ['dsh-session-projection','dsh-session','dsh-system-prompt','dsh-tools','dsh-tool-executor-native','dsh-llm','dsh-agent','dsh-agent-loop','dsh-token-meter','dsh-compaction-basic']){const m=await import('@deepseek-ai/'+name);await ctx.plugin(m.default??m,name==='dsh-agent-loop'?{agents:[]}:name==='dsh-compaction-basic'?{auto:false,headroomTokens:4096,maxTokens:2048,retainTokens:128}:{});}ctx.llm.registerAdapter(['test'],mock);const h={ctx,mock,errors};h.install=async()=>{h.fiber=await ctx.plugin(entry,{genericStateDir:state,...config});};if(!late)await h.install();return h;}
+async function agent(h,cwd,id,depth=0){return (await h.ctx.agents.create({sessionId:id,meta:{cwd,delegationDepth:depth},agentOptions:{provider:'test',model:'mock',subagentDepth:depth}})).agent;}
+async function say(a,text){a.followup(createUserMessage({source:{kind:'user'},content:[{type:'text',text}]}));await a.whenIdle();}
+const records=(state,root)=>path.join(state,'projects',projectKey(root),'records.md');
+test('two auto-discovered projects get independent fresh docs and immediate records',async()=>{const a=fixture('ALPHA_RULE'),b=fixture('BETA_RULE'),state=temp(),h=await host(state);try{const aa=await agent(h,a,'alpha'),bb=await agent(h,b,'beta');await say(aa,'数据库必须用PostgreSQL');await say(bb,'构建必须用pnpm');assert(!JSON.stringify(h.mock.chats.at(-1)).includes('ALPHA_RULE'));assert(!JSON.stringify(h.mock.chats.at(-1)).includes('PostgreSQL'));assert(fs.readFileSync(records(state,a),'utf8').includes('PostgreSQL'));assert(fs.readFileSync(records(state,b),'utf8').includes('pnpm'));await say(aa,'继续');const text=JSON.stringify(h.mock.chats.at(-1));assert(text.includes('ALPHA_RULE')&&text.includes('PostgreSQL'));assert(!text.includes('BETA_RULE')&&!text.includes('构建必须用pnpm'));assert.equal(h.errors.length,0);}finally{await h.ctx.fiber.dispose();}});
+test('already-live old conversation attaches on next step without backfilling old messages',async()=>{const root=fixture('OLD_PROJECT_RULE'),state=temp(),h=await host(state,{late:true});try{const a=await agent(h,root,'old');await say(a,'历史要求必须忽略');await h.install();await say(a,'现在必须使用SQLite');const text=fs.readFileSync(records(state,root),'utf8');assert(text.includes('SQLite'));assert(!text.includes('历史要求'));assert(JSON.stringify(h.mock.chats.at(-1)).includes('OLD_PROJECT_RULE'));}finally{await h.ctx.fiber.dispose();}});
+test('other project developer mode still records project decisions and compaction reloads latest rules',async()=>{const root=fixture('INITIAL_RULE'),state=temp(),h=await host(state);try{const a=await agent(h,root,'compact');await say(a,'开发模式，接口必须向后兼容');fs.writeFileSync(path.join(root,'AGENTS.md'),'LATEST_GENERIC_RULE');await h.ctx.compaction.compactNow(a,new AbortController().signal);await say(a,'继续');const text=JSON.stringify(h.mock.chats.at(-1));assert(text.includes('LATEST_GENERIC_RULE')&&text.includes('接口必须向后兼容'));assert(!text.includes('当前模式：对话'));}finally{await h.ctx.fiber.dispose();}});
+test('invalid output retries pending evidence without losing it',async()=>{const root=fixture('RETRY_RULE'),state=temp(),h=await host(state);try{const a=await agent(h,root,'retry');h.mock.fail=true;await say(a,'测试必须离线运行');assert(!fs.existsSync(records(state,root)));h.mock.fail=false;await say(a,'继续');assert(fs.readFileSync(records(state,root),'utf8').includes('测试必须离线运行'));}finally{await h.ctx.fiber.dispose();}});
+test('unmarked folder, subagent and specialized root are not auto-managed',async()=>{const specialized=fixture('SPECIAL_RULE'),other=fixture('CHILD_RULE'),unmarked=temp(),state=temp(),h=await host(state,{autoProjects:true});try{const child=await agent(h,other,'child',1);await say(child,'不应被写必须忽略');assert(!fs.existsSync(records(state,other)));const free=await agent(h,unmarked,'free');await say(free,'无标记必须忽略');assert(!fs.existsSync(records(state,unmarked)));}finally{await h.ctx.fiber.dispose();}
+ // The explicit specialized root continues to use its original adapter, not the generic store.
+ const j=await host(temp(),{projectRoot:specialized,stateDir:temp()});try{const a=await agent(j,specialized,'special');await say(a,'开发模式');assert(!fs.existsSync(records(state,specialized)));assert(!j.mock.requests.some(r=>JSON.stringify(r.messages).includes('project_user_messages')));}finally{await j.ctx.fiber.dispose();}});
+test('disable cancels a late project extraction before any write',async()=>{const root=fixture('DISPOSE_RULE'),state=temp(),h=await host(state);let release;h.mock.gate=new Promise(r=>{release=r});try{const a=await agent(h,root,'dispose');const pending=say(a,'存储必须隔离');while(!h.mock.requests.some(r=>JSON.stringify(r.messages).includes('project_user_messages')))await new Promise(r=>setTimeout(r,1));await h.fiber.dispose();release();await pending;assert(!fs.existsSync(records(state,root)));}finally{release();await h.ctx.fiber.dispose();}});
+
+test('disabled plugin stops delivering reminders into an already-live agent',async()=>{const root=fixture('REMINDER_RULE'),state=temp(),h=await host(state);try{const a=await agent(h,root,'stop-reminder');await say(a,'继续');await h.fiber.dispose();const cursor=a.session.snapshotEvents().at(-1).seq;await say(a,'再次继续');const added=a.session.snapshotEvents().filter(e=>e.seq>cursor&&e.type==='user/message');assert(!added.some(e=>e.data.source?.kind==='context-reminder'));}finally{await h.ctx.fiber.dispose();}});
